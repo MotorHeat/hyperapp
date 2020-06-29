@@ -66,6 +66,12 @@ var shouldRestart = function(a, b) {
   }
 }
 
+var makeDispatch = function (dispatch, mappers) {
+  return function (a, p) {
+    return dispatch(a, p, mappers)
+  }
+}
+
 var patchSubs = function(oldSubs, newSubs, dispatch) {
   for (
     var i = 0, oldSub, newSub, subs = [];
@@ -82,7 +88,7 @@ var patchSubs = function(oldSubs, newSubs, dispatch) {
           ? [
               newSub[0],
               newSub[1],
-              newSub[0](dispatch, newSub[1]),
+              newSub[0](makeDispatch(dispatch, newSub[2]), newSub[1]),
               oldSub && oldSub[2]()
             ]
           : oldSub
@@ -93,7 +99,9 @@ var patchSubs = function(oldSubs, newSubs, dispatch) {
 }
 
 var patchProperty = function(node, key, oldValue, newValue, listener, isSvg) {
-  if (key === "key") {
+  if (key[0] === '_' && key[1] === '_') {
+    node[key] = newValue
+  } else if (key === "key") {
   } else if (key === "style") {
     for (var k in merge(oldValue, newValue)) {
       oldValue = newValue == null || newValue[k] == null ? "" : newValue[k]
@@ -438,14 +446,14 @@ export var app = function(props) {
   var subs = []
 
   var listener = function(event) {
-    dispatch(this.actions[event.type], event)
+    dispatch(this.actions[event.type], event, getMappers(this))
   }
 
   var setState = function(newState) {
     if (state !== newState) {
       state = newState
       if (subscriptions) {
-        subs = patchSubs(subs, batch([subscriptions(state)]), dispatch)
+        subs = patchSubs(subs, batch([subscriptions(state, [])]), dispatch)
       }
       if (view && !lock) defer(render, (lock = true))
     }
@@ -455,17 +463,31 @@ export var app = function(props) {
   var dispatch = (props.middleware ||
     function(obj) {
       return obj
-    })(function(action, props) {
-    return typeof action === "function"
-      ? dispatch(action(state, props))
-      : isArray(action)
+    })(function(action, props, mappers) {
+      if (typeof action === 'function') {
+        if (mappers && mappers.length > 0) {
+          var effects = []
+          setState(mapSet(state, action(mapGet(state, mappers), props), mappers, effects))
+          effects.forEach(function (ef) {
+            var fx = ef.fx
+            fx.forEach(function (f) {
+              f[0](makeDispatch(dispatch, ef.mappers), f[1])
+            })
+          })
+          return state
+        } else {
+          return dispatch(action(state, props))
+        }
+      }
+
+      return isArray(action)
       ? typeof action[0] === "function" || isArray(action[0])
         ? dispatch(
             action[0],
             typeof action[1] === "function" ? action[1](props) : action[1]
           )
         : (batch(action.slice(1)).map(function(fx) {
-            fx && fx[0](dispatch, fx[1])
+            fx && fx[0](makeDispatch(dispatch, mappers), fx[1])
           }, setState(action[0])),
           state)
       : setState(action)
@@ -483,4 +505,74 @@ export var app = function(props) {
   }
 
   dispatch(props.init)
+}
+
+export function Map (view, getter, setter) {
+  return function (props, children) {
+    const r = h(view, props, children)
+    r.props.__map = { getter, setter }
+    return r
+  }
+}
+
+export function mapper (getter, setter) {
+  return { getter, setter }
+}
+
+export function MapState (getter, setter, children) {
+  if (children) {
+    Array.isArray(children)
+      ? children.forEach(c => c.props.__map = mapper(getter, setter))
+      : children.props.__map = { getter, setter }
+  }
+  return children
+}
+
+function getMappers (node, result) {
+  if (!result) return getMappers(node, [])
+  if (node.__map) {
+    result.push({ ...node.__map })
+  }
+  if (node.parentNode) {
+    getMappers(node.parentNode, result)
+  }
+  return result
+}
+
+function mapGet (globalState, mappers) {
+  return mappers
+    ? mappers.reduce((s, m) => m.getter(s), globalState)
+    : globalState
+}
+
+function mapSet (globalState, subState, mappers, effects) {
+  if (mappers.length === 0) {
+    return subState
+  }
+  var { setter } = mappers[mappers.length - 1]
+  var parentMappers = mappers.slice(0, mappers.length - 1)
+  var parentState = mapGet(globalState, parentMappers)
+  parentState = Array.isArray(parentState) ? [...parentState] : { ...parentState }
+
+  var setterResult = hasEffects(subState)
+    ? (
+      effects.push({ fx: subState.slice(1), mappers: mappers }),
+      setter(parentState, subState[0])
+    )
+    : setter(parentState, subState)
+
+  if (hasEffects(setterResult)) {
+    effects.push({ fx: setterResult.slice(1), mappers: parentMappers })
+    parentState = setterResult[0] // or parentState ?
+  }
+  return mapSet(globalState, parentState, parentMappers, effects)
+}
+
+function hasEffects (s) {
+  return Array.isArray(s)
+    && s.length >= 2
+    && (typeof (s[0]) === 'object')
+    && Array.isArray(s[1])
+    && s[1].length >= 2
+    && typeof (s[1][0]) === 'function'
 }
