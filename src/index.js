@@ -507,35 +507,40 @@ export var app = function(props) {
   dispatch(props.init)
 }
 
-export function Map (view, getter, setter) {
-  return function (props, children) {
+// function Map (view: func, mapper: obj)
+// function Map (view: func, getter: func, setter: func)
+// function Map (view: func, getter: func, setter: func, root: boolean)
+export function Map (view) {
+  var mapper = typeof arguments[1] === 'function'
+    ? { getter: arguments[1], setter: arguments[2], root: !!arguments[3] }
+    : arguments[1]
+  var result = function (props, children) {
     const r = h(view, props, children)
-    r.props.__map = { getter, setter }
+    r.props.__map = mapper
     return r
   }
+  result.getter = mapper.getter
+  result.setter = mapper.setter
+  return result
 }
 
 export function mapper (getter, setter) {
-  return { getter, setter }
+  return { getter, setter, root: false }
 }
 
-export function MapState (getter, setter, children) {
-  if (children) {
-    Array.isArray(children)
-      ? children.forEach(c => c.props.__map = mapper(getter, setter))
-      : children.props.__map = { getter, setter }
-  }
-  return children
+function rootGetter (s) { return s }
+function rootSetter (_, v) { return v }
+export function rootMapper (getter, setter) {
+  return { getter: getter || rootGetter, setter: setter || rootSetter, root: true }
 }
 
 function getMappers (node, result) {
   if (!result) return getMappers(node, [])
   if (node.__map) {
     result.push({ ...node.__map })
+    if (node.__map.root) return result
   }
-  if (node.parentNode) {
-    getMappers(node.parentNode, result)
-  }
+  if (node.parentNode) getMappers(node.parentNode, result)
   return result
 }
 
@@ -569,10 +574,7 @@ function mapSet (globalState, subState, mappers, effects) {
 }
 
 function hasEffects (s) {
-  return Array.isArray(s)
-    && s.length >= 2
-    && (typeof (s[0]) === 'object')
-    && Array.isArray(s[1])
-    && s[1].length >= 2
-    && typeof (s[1][0]) === 'function'
+  return isArray(s)
+    && typeof (s[0]) !== 'function'
+    && !isArray(s[0])
 }
